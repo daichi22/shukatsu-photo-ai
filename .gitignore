@@ -1,0 +1,13 @@
+# Python & Streamlit
+venv/
+.env
+*.env
+__pycache__/
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
