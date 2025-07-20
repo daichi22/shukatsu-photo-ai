@@ -1,0 +1,53 @@
+# 分析に使用するパラメータ設定
+
+# 1. 明るさ設定
+brightness:
+  ideal_min: 120
+  ideal_max: 180
+  # 正規化用: この範囲外だと0点になる
+  worst_min: 50
+  worst_max: 230
+
+# 2. 笑顔スコア設定
+smile:
+  ideal_min: 0.55
+  eye_aspect_ratio_base: 0.25
+  mouth_weight: 0.7
+  eyes_weight: 0.3
+  # 正規化用: 100点の基準と0点の基準
+  ideal_value: 0.7
+  worst_value: 0.2
+
+# 3. 顔の傾き設定
+tilt:
+  ideal_max: 0.015
+  # 正規化用
+  ideal_value: 0.0
+  worst_value: 0.04
+
+# 4. 構図設定
+composition:
+  face_ratio_min: 0.45
+  face_ratio_max: 0.65
+  center_offset_max: 0.05
+  # 正規化用
+  face_ratio_ideal: 0.55
+  face_ratio_worst: 0.3
+  center_offset_ideal: 0.0
+  center_offset_worst: 0.15
+
+# 5. 鮮明度設定
+sharpness:
+  laplacian_variance_min: 100.0
+  # 正規化用
+  laplacian_variance_ideal: 250.0
+  laplacian_variance_worst: 50.0
+
+# 6. 総合スコアの重み付け設定
+scoring_weights:
+  sharpness: 30 # fringeの分を再配分
+  brightness: 25 # fringeの分を再配分
+  smile: 20 # fringeの分を再配分
+  face_ratio: 10
+  center_offset: 10
+  tilt: 5

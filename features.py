@@ -1,95 +1,163 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+import yaml
+from dataclasses import dataclass
 
-# Mediapipeのランドマークインデックス
-# これらを定義しておくとコードが読みやすくなる
-MOUTH_LEFT = 61
-MOUTH_RIGHT = 291
-LEFT_EYE_TOP = 159
-LEFT_EYE_BOTTOM = 145
-LEFT_EYE_LEFT = 130
-LEFT_EYE_RIGHT = 133 # 33から変更して内側の点を取得
-RIGHT_EYE_TOP = 386
-RIGHT_EYE_BOTTOM = 374
-RIGHT_EYE_LEFT = 362 # 263から変更
-RIGHT_EYE_RIGHT = 359
+# --- 初期設定 ---
+with open('config.yaml', 'r', encoding='utf-8') as f:
+    config = yaml.safe_load(f)
 
+# --- データクラス定義 ---
+@dataclass
+class AnalysisResult:
+    label: str; value: float; status: str; message_key: str; normalized_score: int
 
+# --- 定数定義 ---
+MOUTH_LEFT, MOUTH_RIGHT = 61, 291
+LEFT_EYE_TOP, LEFT_EYE_BOTTOM, LEFT_EYE_LEFT_CORNER, LEFT_EYE_RIGHT_CORNER = 159, 145, 130, 33
+RIGHT_EYE_TOP, RIGHT_EYE_BOTTOM, RIGHT_EYE_LEFT_CORNER, RIGHT_EYE_RIGHT_CORNER = 386, 374, 362, 263
+
+# --- メイン分析クラス ---
 class FaceAnalyzer:
     def __init__(self):
         self.face_mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5
+            static_image_mode=True, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5
         )
 
-    def _calculate_ear(self, landmarks, eye_top_idx, eye_bottom_idx, eye_left_idx, eye_right_idx):
-        """Eye Aspect Ratio (EAR)を計算する"""
-        eye_top = landmarks[eye_top_idx]
-        eye_bottom = landmarks[eye_bottom_idx]
-        eye_left = landmarks[eye_left_idx]
-        eye_right = landmarks[eye_right_idx]
+    def _normalize(self, value, ideal, worst, is_range=False, range_min=0, range_max=0, higher_is_better=True):
+        if is_range:
+            center = (range_min + range_max) / 2
+            dist = abs(value - center)
+            max_dist = (range_max - range_min) / 2
+            score = (max_dist - dist) / max_dist * 100 if max_dist > 0 else 100
+        else:
+            if higher_is_better:
+                if ideal == worst: return 100 if value >= ideal else 0
+                score = ((value - worst) / (ideal - worst)) * 100
+            else:
+                if ideal == worst: return 100 if value <= ideal else 0
+                score = ((worst - value) / (worst - ideal)) * 100
+        return max(0, min(100, int(score)))
 
-        ver_dist = np.linalg.norm([eye_top.x - eye_bottom.x, eye_top.y - eye_bottom.y])
-        hor_dist = np.linalg.norm([eye_left.x - eye_right.x, eye_left.y - eye_right.y])
+    # 各評価項目を判定・正規化するプライベートメソッド群
+    def _evaluate_brightness(self, value):
+        cfg = config['brightness']
+        status = "OK" if cfg['ideal_min'] <= value <= cfg['ideal_max'] else "ERROR"
+        score = self._normalize(value, 0, 0, is_range=True, range_min=cfg['ideal_min'], range_max=cfg['ideal_max'])
+        return AnalysisResult("顔の明るさ", value, status, "BRIGHTNESS", score)
 
-        return ver_dist / hor_dist if hor_dist > 0 else 0
+    def _evaluate_smile(self, value):
+        cfg = config['smile']
+        status = "OK" if value >= cfg['ideal_min'] else "WARN"
+        score = self._normalize(value, cfg['ideal_value'], cfg['worst_value'])
+        return AnalysisResult("笑顔スコア", value, status, "SMILE", score)
+    
+    def _evaluate_tilt(self, value):
+        cfg = config['tilt']
+        status = "OK" if value <= cfg['ideal_max'] else "WARN"
+        score = self._normalize(value, cfg['ideal_value'], cfg['worst_value'], higher_is_better=False)
+        return AnalysisResult("顔の傾き", value, status, "TILT", score)
+
+    def _evaluate_face_ratio(self, value):
+        cfg = config['composition']
+        status = "OK" if cfg['face_ratio_min'] <= value <= cfg['face_ratio_max'] else "WARN"
+        score = self._normalize(abs(value - cfg['face_ratio_ideal']), 0, abs(cfg['face_ratio_worst'] - cfg['face_ratio_ideal']), higher_is_better=False)
+        return AnalysisResult("顔の比率", value, status, "FACE_RATIO", score)
+    
+    def _evaluate_center_offset(self, value):
+        cfg = config['composition']
+        status = "OK" if value <= cfg['center_offset_max'] else "WARN"
+        score = self._normalize(value, cfg['center_offset_ideal'], cfg['center_offset_worst'], higher_is_better=False)
+        return AnalysisResult("中心位置", value, status, "CENTER_OFFSET", score)
+
+    def _evaluate_sharpness(self, value):
+        cfg = config['sharpness']
+        status = "OK" if value >= cfg['laplacian_variance_min'] else "ERROR"
+        score = self._normalize(value, cfg['laplacian_variance_ideal'], cfg['laplacian_variance_worst'])
+        return AnalysisResult("写真の鮮明度", value, status, "SHARPNESS", score)
 
     def analyze(self, image):
-        """画像を受け取り、全ての分析結果を返す"""
-        img_bgr = cv2.cvtColor(np.array(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+        img_pil = image.convert('RGB')
+        img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         height, width, _ = img_rgb.shape
-
         results = self.face_mesh.process(img_rgb)
-        annotated_image = img_rgb.copy()
 
-        if not results.multi_face_landmarks:
-            return None # 顔が検出できなかった場合はNoneを返す
+        if not results.multi_face_landmarks: return None
 
-        face_landmarks = results.multi_face_landmarks[0].landmark
-
-        # --- 1. 明るさ (顔領域の平均輝度) ---
-        x_coords = [lm.x for lm in face_landmarks]
-        y_coords = [lm.y for lm in face_landmarks]
-        x_min, x_max = int(min(x_coords) * width), int(max(x_coords) * width)
-        y_min, y_max = int(min(y_coords) * height), int(max(y_coords) * height)
-        face_roi = cv2.cvtColor(img_rgb[y_min:y_max, x_min:x_max], cv2.COLOR_RGB2GRAY)
-        brightness = np.mean(face_roi) if face_roi.size > 0 else 0
-
-        # --- 2. 笑顔スコア (口角 + 目の細まり具合) ---
-        # 口のスコア
-        mouth_width = np.linalg.norm([face_landmarks[MOUTH_LEFT].x - face_landmarks[MOUTH_RIGHT].x, face_landmarks[MOUTH_LEFT].y - face_landmarks[MOUTH_RIGHT].y])
-        eye_dist = np.linalg.norm([face_landmarks[LEFT_EYE_LEFT].x - face_landmarks[RIGHT_EYE_RIGHT].x, face_landmarks[LEFT_EYE_LEFT].y - face_landmarks[RIGHT_EYE_RIGHT].y])
-        mouth_score = mouth_width / eye_dist if eye_dist > 0 else 0
+        landmarks = results.multi_face_landmarks[0].landmark
         
-        # 目のスコア (EAR: 小さいほど目が細い = 笑っている)
-        left_ear = self._calculate_ear(face_landmarks, LEFT_EYE_TOP, LEFT_EYE_BOTTOM, LEFT_EYE_LEFT, LEFT_EYE_RIGHT)
-        right_ear = self._calculate_ear(face_landmarks, RIGHT_EYE_TOP, RIGHT_EYE_BOTTOM, RIGHT_EYE_LEFT, RIGHT_EYE_RIGHT)
-        # EARは小さい方が良いため、逆数をとるなどしてスコア化する。ここでは単純化のため、正規化されたmouth_scoreと組み合わせる。
-        # 0.25は平常時のEARの目安。それより小さいほど高スコアになるように調整
-        eye_smile_score = max(0, 1 - ( (left_ear + right_ear) / 2 / 0.25) ) 
+        unique_indices = set(i for conn in mp.solutions.face_mesh.FACEMESH_FACE_OVAL for i in conn)
+        face_points = np.array([[landmarks[i].x * width, landmarks[i].y * height] for i in unique_indices], dtype=np.int32)
+        hull = cv2.convexHull(face_points)
+        face_mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillConvexPoly(face_mask, hull, 255)
 
-        # 総合笑顔スコア（口の比重を大きくする）
-        smile_score = (mouth_score * 0.7) + (eye_smile_score * 0.3)
-        # スコアの内訳も返す
-        smile_metrics = {"mouth": mouth_score, "eyes": eye_smile_score}
+        # 生データの計算
+        raw_brightness = cv2.mean(cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY), mask=face_mask)[0]
+        raw_smile_score = self._calculate_smile_score(landmarks)
+        raw_tilt_score = abs(landmarks[LEFT_EYE_TOP].y - landmarks[RIGHT_EYE_TOP].y)
+        face_rect = cv2.boundingRect(hull)
+        raw_face_ratio = face_rect[3] / height
+        face_center = (face_rect[0] + face_rect[2] / 2, face_rect[1] + face_rect[3] / 2)
+        raw_center_offset = np.linalg.norm([face_center[0] - width/2, face_center[1] - height/2]) / np.linalg.norm([width, height])
+        raw_sharpness = self._calculate_sharpness(img_bgr, face_mask)
 
-        # --- 3. 顔の傾き ---
-        left_eye_y = face_landmarks[LEFT_EYE_TOP].y
-        right_eye_y = face_landmarks[RIGHT_EYE_TOP].y
-        tilt_score = abs(left_eye_y - right_eye_y)
-
-        # --- 描画処理 ---
-        cv2.rectangle(annotated_image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-        
-        analysis_data = {
-            "brightness": brightness,
-            "smile_score": smile_score,
-            "smile_metrics": smile_metrics,
-            "tilt_score": tilt_score,
-            "annotated_image": annotated_image
+        # 構造化された結果を生成
+        analysis_results = {
+            "brightness": self._evaluate_brightness(raw_brightness),
+            "smile": self._evaluate_smile(raw_smile_score),
+            "tilt": self._evaluate_tilt(raw_tilt_score),
+            "face_ratio": self._evaluate_face_ratio(raw_face_ratio),
+            "center_offset": self._evaluate_center_offset(raw_center_offset),
+            "sharpness": self._evaluate_sharpness(raw_sharpness)
         }
-        return analysis_data
+        
+        # 総合スコアの計算
+        total_score = 0
+        total_weight = 0
+        weights = config['scoring_weights']
+        for key, result in analysis_results.items():
+            weight = weights.get(key, 0)
+            total_score += result.normalized_score * weight
+            total_weight += weight
+        final_score = total_score / total_weight if total_weight > 0 else 0
+
+        annotated_image = self._draw_annotations(img_rgb, hull, landmarks)
+        
+        return {
+            "results": analysis_results,
+            "annotated_image": annotated_image,
+            "final_score": final_score
+        }
+
+    def _calculate_ear(self, landmarks, eye_top_idx, eye_bottom_idx, eye_left_idx, eye_right_idx):
+        eye_top = landmarks[eye_top_idx]; eye_bottom = landmarks[eye_bottom_idx]
+        eye_left = landmarks[eye_left_idx]; eye_right = landmarks[eye_right_idx]
+        ver_dist = np.linalg.norm([eye_top.x - eye_bottom.x, eye_top.y - eye_bottom.y])
+        hor_dist = np.linalg.norm([eye_left.x - eye_right.x, eye_left.y - eye_right.y])
+        return ver_dist / hor_dist if hor_dist > 0 else 0
+
+    def _calculate_smile_score(self, landmarks):
+        mouth_width = np.linalg.norm([landmarks[MOUTH_LEFT].x - landmarks[MOUTH_RIGHT].x, landmarks[MOUTH_LEFT].y - landmarks[MOUTH_RIGHT].y])
+        eye_dist = np.linalg.norm([landmarks[LEFT_EYE_LEFT_CORNER].x - landmarks[RIGHT_EYE_RIGHT_CORNER].x, landmarks[LEFT_EYE_LEFT_CORNER].y - landmarks[RIGHT_EYE_RIGHT_CORNER].y])
+        mouth_score = mouth_width / eye_dist if eye_dist > 0 else 0
+        left_ear = self._calculate_ear(landmarks, LEFT_EYE_TOP, LEFT_EYE_BOTTOM, LEFT_EYE_LEFT_CORNER, LEFT_EYE_RIGHT_CORNER)
+        right_ear = self._calculate_ear(landmarks, RIGHT_EYE_TOP, RIGHT_EYE_BOTTOM, RIGHT_EYE_LEFT_CORNER, RIGHT_EYE_RIGHT_CORNER)
+        avg_ear = (left_ear + right_ear) / 2
+        eye_smile_score = max(0, 1 - (avg_ear / config['smile']['eye_aspect_ratio_base']))
+        return (mouth_score * config['smile']['mouth_weight']) + (eye_smile_score * config['smile']['eyes_weight'])
+
+    def _calculate_sharpness(self, img_bgr, face_mask):
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        laplacian_face = laplacian[face_mask == 255]
+        return laplacian_face.var() if laplacian_face.size > 0 else 0
+
+    def _draw_annotations(self, img_rgb, hull, landmarks):
+        annotated_image = img_rgb.copy()
+        cv2.line(annotated_image, (0, int(landmarks[LEFT_EYE_TOP].y * img_rgb.shape[0])), (img_rgb.shape[1], int(landmarks[LEFT_EYE_TOP].y * img_rgb.shape[0])), (255, 0, 0), 1)
+        cv2.line(annotated_image, (0, int(landmarks[RIGHT_EYE_TOP].y * img_rgb.shape[0])), (img_rgb.shape[1], int(landmarks[RIGHT_EYE_TOP].y * img_rgb.shape[0])), (255, 0, 0), 1)
+        cv2.polylines(annotated_image, [hull], isClosed=True, color=(0, 255, 0), thickness=2)
+        return annotated_image

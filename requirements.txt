@@ -1,0 +1,7 @@
+streamlit
+opencv-python
+mediapipe
+openai
+python-dotenv
+pyyaml
+numpy
