@@ -82,7 +82,6 @@ if uploaded_file:
             st.markdown("---")
             st.subheader("📈 詳細スコアと個別アドバイス")
             
-            # ▼▼▼▼▼ UIを2つのグループ、3列x2段のレイアウトに修正 ▼▼▼▼▼
             # 顔の評価
             st.markdown("##### 👩 顔の評価")
             c1, c2, c3 = st.columns(3)
@@ -111,7 +110,6 @@ if uploaded_file:
                     st.metric(label=res.label, value=f"{res.value:.2f}", delta=delta_text, delta_color=("normal" if res.status == "OK" else "inverse"))
                     if st.button("アドバイス", key=f"advice_{key}", use_container_width=True):
                         st.session_state.selected_advice = res.message_key
-            # ▲▲▲▲▲ UI修正ここまで ▲▲▲▲▲
 
             # 詳細アドバイスの表示ロジック
             if 'selected_advice' in st.session_state and st.session_state.selected_advice:

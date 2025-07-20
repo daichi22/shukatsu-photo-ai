@@ -64,12 +64,19 @@
 ## 📁 ディレクトリ構成
 
 shukatsu-photo-analyzer/
+
 ├── app.py
-├── features.py
-├── gpt_advice.py
+
 ├── config.yaml
+
+├── features.py
+
+├── gpt_advice.py
+
 ├── requirements.txt
+
 ├── .env
+
 └── README.md
 
 ## 🔒 プライバシーについて
@@ -80,7 +87,7 @@ shukatsu-photo-analyzer/
 
 [MIT License](https://opensource.org/licenses/MIT)
 
-## 👤 制作ストーリーと工夫した点（ガクチカ）
+## 👤 制作ストーリーと工夫した点
 
 就職活動において、多くの学生が抱える「証明写真の印象」という曖昧な不安を、テクノロジーで解消したいという思いから本アプリを開発しました。
 
